@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
@@ -16,6 +17,8 @@ import (
 
 // SPNEGO implements the GSS-API mechanism for RFC 4178
 type SPNEGO struct {
+	onUnauthorized http.HandlerFunc
+
 	serviceSettings *service.Settings
 	client          *client.Client
 	spn             string

@@ -245,7 +245,7 @@ const (
 )
 
 // SPNEGOKRB5Authenticate is a Kerberos SPNEGO authentication HTTP handler wrapper.
-func SPNEGOKRB5Authenticate(inner http.Handler, kt *keytab.Keytab, settings ...func(*service.Settings)) http.Handler {
+func SPNEGOKRB5Authenticate(onUnauthorized http.HandlerFunc, inner http.Handler, kt *keytab.Keytab, settings ...func(*service.Settings)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set up the SPNEGO GSS-API mechanism
 		var spnego *SPNEGO
@@ -258,6 +258,8 @@ func SPNEGOKRB5Authenticate(inner http.Handler, kt *keytab.Keytab, settings ...f
 			spnego = SPNEGOService(kt, settings...)
 			spnego.Log("%s - SPNEGO could not parse client address: %v", r.RemoteAddr, err)
 		}
+
+		spnego.onUnauthorized = onUnauthorized
 
 		// Check if there is a session manager and if there is an already established session for this client
 		id, err := getSessionCredentials(spnego, r)
@@ -309,7 +311,7 @@ func getAuthorizationNegotiationHeaderAsSPNEGOToken(spnego *SPNEGO, r *http.Requ
 	if len(s) != 2 || s[0] != HTTPHeaderAuthResponseValueKey {
 		// No Authorization header set so return 401 with WWW-Authenticate Negotiate header
 		w.Header().Set(HTTPHeaderAuthResponse, HTTPHeaderAuthResponseValueKey)
-		http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
+		spnego.onUnauthorized(w, r)
 		return nil, errors.New("client did not provide a negotiation authorization header")
 	}
 
@@ -380,13 +382,16 @@ func newSession(spnego *SPNEGO, r *http.Request, w http.ResponseWriter, id *cred
 func spnegoNegotiateKRB5MechType(s *SPNEGO, w http.ResponseWriter, format string, v ...interface{}) {
 	s.Log(format, v...)
 	w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespIncompleteKRB5)
-	http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
+	s.onUnauthorized(w, nil)
+	//http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
 }
 
 func spnegoResponseReject(s *SPNEGO, w http.ResponseWriter, format string, v ...interface{}) {
 	s.Log(format, v...)
 	w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespReject)
-	http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
+
+	s.onUnauthorized(w, nil)
+	//http.Error(w, UnauthorizedMsg, http.StatusUnauthorized)
 }
 
 func spnegoResponseAcceptCompleted(s *SPNEGO, w http.ResponseWriter, format string, v ...interface{}) {
