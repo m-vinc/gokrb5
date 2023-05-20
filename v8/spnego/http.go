@@ -398,3 +398,60 @@ func spnegoInternalServerError(s *SPNEGO, w http.ResponseWriter, format string, 
 	s.Log(format, v...)
 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 }
+
+var ErrNoAuthorizationHeader = errors.New("no Authorization Header")
+
+func Authenticate(kt *keytab.Keytab, w http.ResponseWriter, r *http.Request, settings ...func(*service.Settings)) (bool, goidentity.Identity, error) {
+	// Get the auth header
+	s := strings.SplitN(r.Header.Get(HTTPHeaderAuthRequest), " ", 2)
+	if len(s) != 2 || s[0] != HTTPHeaderAuthResponseValueKey {
+		// No Authorization header set so return 401 with WWW-Authenticate Negotiate header
+		w.Header().Set(HTTPHeaderAuthResponse, HTTPHeaderAuthResponseValueKey)
+		return false, nil, ErrNoAuthorizationHeader
+	}
+
+	// Set up the SPNEGO GSS-API mechanism
+	var spnego *SPNEGO
+	h, err := types.GetHostAddress(r.RemoteAddr)
+	if err != nil {
+		spnego = SPNEGOService(kt, settings...)
+		spnego.Log("%s - SPNEGO could not parse client address: %v", r.RemoteAddr, err)
+	} else {
+		// put in this order so that if the user provides a ClientAddress it will override the one here.
+		o := append([]func(*service.Settings){service.ClientAddress(h)}, settings...)
+		spnego = SPNEGOService(kt, o...)
+	}
+
+	// Decode the header into an SPNEGO context token
+	b, err := base64.StdEncoding.DecodeString(s[1])
+	if err != nil {
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespIncompleteKRB5)
+		return false, nil, fmt.Errorf("%s - SPNEGO error in base64 decoding negotiation header: %v", r.RemoteAddr, err)
+	}
+	var st SPNEGOToken
+	err = st.Unmarshal(b)
+	if err != nil {
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespIncompleteKRB5)
+		return false, nil, fmt.Errorf("%s - SPNEGO error in unmarshaling SPNEGO token: %v", r.RemoteAddr, err)
+	}
+
+	// Validate the context token
+	authed, ctx, status := spnego.AcceptSecContext(&st)
+	if status.Code != gssapi.StatusComplete && status.Code != gssapi.StatusContinueNeeded {
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespReject)
+		return false, nil, fmt.Errorf("%s - SPNEGO validation error: %v", r.RemoteAddr, status)
+	}
+	if status.Code == gssapi.StatusContinueNeeded {
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespIncompleteKRB5)
+		return false, nil, fmt.Errorf("%s - SPNEGO GSS-API continue needed", r.RemoteAddr)
+	}
+	if authed {
+		c := ctx.Value(ctxCredentials).(goidentity.Identity)
+		spnego.Log("%s %s@%s - SPNEGO authentication succeeded", r.RemoteAddr, c.UserName(), c.Domain())
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespKRBAcceptCompleted)
+		return true, c, nil
+	} else {
+		w.Header().Set(HTTPHeaderAuthResponse, spnegoNegTokenRespReject)
+		return false, nil, fmt.Errorf("%s - SPNEGO Kerberos authentication failed", r.RemoteAddr)
+	}
+}
