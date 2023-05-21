@@ -71,6 +71,39 @@ func LoadCCache(cpath string) (*CCache, error) {
 	return c, err
 }
 
+// Umarshal the credential from what we retrieve from the KEYRING: ccache type on linux
+// In the file format ccache we got the default principal
+// Some version check is not performed since I understand only version 4 is used in KEYRING ccache type
+// This function doesn't take care of retrieving the data from the keyring, you can achieve it with the "github.com/jsipprell/keyctl" or just calling the keyctl binary
+// https://github.com/krb5/krb5/blob/e991aecd44d9d953e7ceb928f994fd07a0105433/src/lib/krb5/ccache/ccmarshal.c#L35
+func LoadKeyringCCache(credential []byte, defaultPrincipal []byte) (*CCache, error) {
+	c := new(CCache)
+	c.Version = 4
+	pd := 0
+	p := 0
+
+	// We assume the version of the ccache is 4 since we read data from keyring
+	var endian binary.ByteOrder
+	endian = binary.BigEndian
+
+	// There is no header in what we retrive from keyring, found no documentation about that header so I assume this is a file format specific thing ?
+	//err := parseHeader(credential, &p, c, &endian)
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	cred, err := parseCredential(credential, &p, c, &endian)
+	if err != nil {
+		return nil, err
+	}
+
+	// In the keyring the defaultPrincipal is not included in the same data as the credential, so we pass it through an other agument and parse in with his own index `pd` and pass the same ccache struct since the data share the same endian property as the credential data
+	c.DefaultPrincipal = parsePrincipal(defaultPrincipal, &pd, c, &endian)
+	c.Credentials = []*Credential{cred}
+
+	return c, nil
+}
+
 // Unmarshal a byte slice of credential cache data into CCache type.
 func (c *CCache) Unmarshal(b []byte) error {
 	p := 0
